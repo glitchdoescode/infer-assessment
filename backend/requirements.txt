@@ -1,2 +1,4 @@
 pydantic
 sqlmodel
+fastapi
+uvicorn
