@@ -20,6 +20,9 @@ Run the bot using::
 """
 
 import os
+import uuid
+import wave
+from datetime import datetime
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -38,6 +41,7 @@ logger.info("✅ Silero VAD model loaded")
 
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMRunFrame
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 
 logger.info("Loading pipeline components...")
 from pipecat.pipeline.pipeline import Pipeline
@@ -105,9 +109,150 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         observers=[RTVIObserver(rtvi)],
     )
 
+    # Create a session recorder to manage recording and state
+    session_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    
+    # Ensure recordings directory exists
+    recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+    os.makedirs(recordings_dir, exist_ok=True)
+    recording_path = os.path.join(recordings_dir, f"{session_id}.wav")
+
+    # Audio recording processor
+    audiobuffer = AudioBufferProcessor(
+        user_continuous_stream=False, # We want turns
+    )
+    
+    # initialize session data
+    session_data = {
+        "id": session_id,
+        "created_at": datetime.utcnow(),
+        "transcript": [],
+        "freeze_events": [],
+        "latency_metrics": {},
+        "audio_url": f"/recordings/{session_id}.wav"
+    }
+
+    # Helper to save session to DB
+    def save_session_to_db():
+        try:
+             # We need to use the sync engine context here or create a new session
+             from app.database import engine
+             from sqlmodel import Session as SQLSession
+             from app.schema import Session as SessionModel
+             
+             with SQLSession(engine) as db:
+                 # Check if exists, else create
+                 existing = db.get(SessionModel, session_id)
+                 if existing:
+                     existing.transcript = session_data["transcript"]
+                     existing.freeze_events = session_data["freeze_events"]
+                     existing.latency_metrics = session_data["latency_metrics"]
+                     existing.audio_url = session_data["audio_url"]
+                     db.add(existing)
+                 else:
+                     new_session = SessionModel(**session_data)
+                     db.add(new_session)
+                 db.commit()
+                 logger.info(f"Saved session {session_id} to database")
+        except Exception as e:
+            logger.error(f"Failed to save session to DB: {e}")
+
+    @audiobuffer.event_handler("on_audio_data")
+    async def on_audio_data(buffer, audio, sample_rate, num_channels):
+        # Save the full recording
+        with wave.open(recording_path, "wb") as wf:
+            wf.setnchannels(num_channels)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio)
+        logger.info(f"Saved recording to {recording_path}")
+        
+        # After saving audio, ensure final DB update
+        save_session_to_db()
+
+    pipeline = Pipeline(
+        [
+            transport.input(),  # Transport user input
+            rtvi,  # RTVI processor
+            stt,
+            context_aggregator.user(),  # User responses
+            llm,  # LLM
+            tts,  # TTS
+            transport.output(),  # Transport bot output
+            audiobuffer, # Capture audio
+            context_aggregator.assistant(),  # Assistant spoken responses
+        ]
+    )
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            enable_metrics=True,
+            enable_usage_metrics=True,
+        ),
+        observers=[RTVIObserver(rtvi)],
+    )
+
+    # Track turns for transcript
+    async def log_user_turn(turn):
+        # turn is a dictionary or object with text, timestamp?
+        # The context aggregator might give us messages.
+        # Let's rely on processors if possible or hooking into the assistants.
+        pass
+
+    # We need to capture transcript items. 
+    # A simple way is to observe the context.
+    
+    @context_aggregator.user().event_handler("on_context_update")
+    async def on_user_context_update(processor, context):
+        # This triggers when user speaks
+        if context.messages:
+            last_msg = context.messages[-1]
+            if last_msg['role'] == 'user':
+                 session_data["transcript"].append({
+                     "role": "user",
+                     "content": last_msg['content'],
+                     "timestamp": datetime.utcnow().timestamp(), # Approximate
+                     "latency": 0.0 # User has no latency
+                 })
+                 save_session_to_db()
+
+    @context_aggregator.assistant().event_handler("on_context_update")
+    async def on_bot_context_update(processor, context):
+        # This triggers when bot speaks
+        if context.messages:
+             last_msg = context.messages[-1]
+             if last_msg['role'] == 'assistant':
+                 # Calculate latency: time since last user turn
+                 latency = 0.0
+                 if session_data["transcript"] and session_data["transcript"][-1]["role"] == "user":
+                      last_user_time = session_data["transcript"][-1]["timestamp"]
+                      latency = datetime.utcnow().timestamp() - last_user_time
+                 
+                 session_data["transcript"].append({
+                     "role": "assistant",
+                     "content": last_msg['content'],
+                     "timestamp": datetime.utcnow().timestamp(),
+                     "latency": latency
+                 })
+                 
+                 # Update average latency
+                 latencies = [t["latency"] for t in session_data["transcript"] if t["role"] == "assistant"]
+                 if latencies:
+                     session_data["latency_metrics"]["average_latency"] = sum(latencies) / len(latencies)
+                 
+                 save_session_to_db()
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info(f"Client connected")
+        # Start recording
+        await audiobuffer.start_recording()
+        
+        # Create initial DB entry
+        save_session_to_db()
+        
         # Kick off the conversation.
         messages.append({"role": "system", "content": "Say hello and briefly introduce yourself."})
         await task.queue_frames([LLMRunFrame()])
@@ -115,8 +260,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"Client disconnected")
+        # Stop recording is implicit when pipeline stops usually, but audiobuffer might need a nudge to flush?
+        # audiobuffer processor stops when pipeline stops.
+        # But we need to ensure we save the file. 
+        # The on_audio_data is called when the processor stops or we stop it.
+        await audiobuffer.stop_recording()
+        
         await task.cancel()
-
+    
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
 
     await runner.run(task)
