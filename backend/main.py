@@ -9,7 +9,10 @@ import os
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_and_tables()
-    os.makedirs("backend/recordings", exist_ok=True)
+    # RECORDINGS_DIR is ensured in global scope or here
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
     yield
 
 app = FastAPI(title="Voice Agent Freeze Detector", lifespan=lifespan)
@@ -27,7 +30,11 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 
 # Static files for recordings
-app.mount("/recordings", StaticFiles(directory="backend/recordings"), name="recordings")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RECORDINGS_DIR = os.path.join(BASE_DIR, "recordings")
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
+app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 
 if __name__ == "__main__":
     import uvicorn
