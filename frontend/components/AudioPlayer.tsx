@@ -1,16 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { TranscriptTurn } from "../lib/api";
+import { TranscriptTurn, FreezeEvent } from "../lib/api";
 import { Play, Pause, RotateCcw } from "lucide-react";
 
 interface AudioPlayerProps {
     src?: string;
     transcript: TranscriptTurn[];
+    freezeEvents?: FreezeEvent[];
     onTimeUpdate?: (currentTime: number) => void;
 }
-
-export function AudioPlayer({ src, transcript, onTimeUpdate }: AudioPlayerProps) {
+export function AudioPlayer({ src, transcript, freezeEvents, onTimeUpdate }: AudioPlayerProps) {
     const audioRef = useRef<HTMLAudioElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
@@ -123,14 +123,11 @@ export function AudioPlayer({ src, transcript, onTimeUpdate }: AudioPlayerProps)
                 {/* Latency Markers */}
                 {assistantTurns.map((turn, i) => {
                     const relativeTime = turn.timestamp - startTime;
-                    // Only show if within duration
                     if (relativeTime < 0 || relativeTime > duration) return null;
-
                     const position = (relativeTime / duration) * 100;
-
                     return (
                         <div
-                            key={i}
+                            key={`lat-${i}`}
                             className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-amber-400 group cursor-help z-20 flex items-center justify-center border border-white shadow-sm"
                             style={{ left: `${position}%` }}
                             title={`Latency: ${turn.latency.toFixed(2)}s`}
@@ -141,11 +138,36 @@ export function AudioPlayer({ src, transcript, onTimeUpdate }: AudioPlayerProps)
                         </div>
                     );
                 })}
+
+                {/* Freeze Event Markers */}
+                {freezeEvents?.map((event, i) => {
+                    const relativeStart = event.start_time - startTime;
+                    if (relativeStart > duration) return null;
+
+                    const startPos = Math.max(0, (relativeStart / duration) * 100);
+                    const width = Math.min(100 - startPos, (event.duration / duration) * 100);
+
+                    return (
+                        <div
+                            key={`freeze-${i}`}
+                            className="absolute top-0 h-full bg-red-400 opacity-60 z-10 group cursor-help"
+                            style={{ left: `${startPos}%`, width: `${width}%` }}
+                            title={`Freeze: ${event.duration.toFixed(2)}s`}
+                        >
+                            <div className="hidden group-hover:block absolute bottom-full mb-1 bg-red-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-30">
+                                Freeze: {event.duration.toFixed(2)}s
+                            </div>
+                        </div>
+                    );
+                })}
             </div>
 
             <div className="mt-2 text-xs text-gray-400 flex justify-between">
                 <span>0:00</span>
-                <span>Latency events marked in yellow</span>
+                <div className="flex gap-4">
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400"></span> Latency</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-red-400"></span> Freeze</span>
+                </div>
                 <span>{formatTime(duration)}</span>
             </div>
         </div>

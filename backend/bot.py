@@ -28,6 +28,9 @@ from dotenv import load_dotenv
 from loguru import logger
 
 print("🚀 Starting Pipecat bot...")
+import os
+print(f"DEBUG: CWD = {os.getcwd()}")
+print(f"DEBUG: DB Path = {os.path.abspath('database.db')}")
 print("⏳ Loading models and imports (20 seconds, first run only)\n")
 
 logger.info("Loading Local Smart Turn Analyzer V3...")
@@ -43,6 +46,10 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.transcript_processor import TranscriptProcessor
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from pipecat.frames.frames import AudioRawFrame
+import random
+import asyncio
 
 logger.info("Loading pipeline components...")
 from pipecat.pipeline.pipeline import Pipeline
@@ -66,6 +73,11 @@ load_dotenv(override=True)
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     logger.info(f"Starting bot")
+    
+    # Ensure DB exists
+    from app.database import create_db_and_tables
+    from app.schema import Session
+    create_db_and_tables()
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
@@ -141,7 +153,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     def save_session_to_db():
         try:
              # We need to use the sync engine context here or create a new session
-             from app.database import engine
+             from app.database import engine, create_db_and_tables
              from sqlmodel import Session as SQLSession
              from app.schema import Session as SessionModel
              
@@ -161,6 +173,59 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                  logger.info(f"Saved session {session_id} to database")
         except Exception as e:
             logger.error(f"Failed to save session to DB: {e}")
+
+    # Freeze Simulator
+    class FreezeSimulator(FrameProcessor):
+        def __init__(self):
+            super().__init__()
+            self._frozen = False
+            self._freeze_end_time = 0
+            # Check env var to enable/disable
+            self._enabled = os.getenv("ENABLE_FREEZE_SIMULATION", "false").lower() == "true"
+            if self._enabled:
+                logger.info("Freeze Simulation ENABLED")
+            
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            
+            if not self._enabled:
+                await self.push_frame(frame, direction)
+                return
+
+            # Check if we should freeze on AudioRawFrame (output audio)
+            if isinstance(frame, AudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
+                current_time = datetime.utcnow().timestamp()
+                
+                # If currently frozen
+                if self._frozen:
+                    if current_time < self._freeze_end_time:
+                         # Drop audio frame (effectively silence/freeze)
+                         return 
+                    else:
+                        # Unfreeze
+                        self._frozen = False
+                        logger.info("Unfreezing bot")
+                        # Update the last event with actual end time? 
+                        # We simplified by setting duration upfront.
+                
+                # If not frozen, small chance to freeze
+                elif random.random() < 0.005: # 0.5% chance per frame (approx every few seconds given frame rate)
+                     duration = random.uniform(2.0, 5.0) # 2-5s freeze
+                     self._frozen = True
+                     self._freeze_end_time = current_time + duration
+                     logger.info(f"Freezing bot for {duration:.2f}s")
+                     
+                     session_data["freeze_events"].append({
+                         "start_time": current_time,
+                         "end_time": self._freeze_end_time,
+                         "duration": duration
+                     })
+                     save_session_to_db()
+                     return # Drop this frame too
+            
+            await self.push_frame(frame, direction)
+            
+    freeze_simulator = FreezeSimulator()
 
     @audiobuffer.event_handler("on_audio_data")
     async def on_audio_data(buffer, audio, sample_rate, num_channels):
@@ -184,6 +249,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             context_aggregator.user(),  # User responses
             llm,  # LLM
             tts,  # TTS
+            freeze_simulator, # Simulate freeze (drop frames before audio output)
             transport.output(),  # Transport bot output
             audiobuffer, # Capture audio
             transcript.assistant(), # Capture bot transcript

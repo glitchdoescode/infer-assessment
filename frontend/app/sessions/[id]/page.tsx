@@ -80,6 +80,7 @@ export default function SessionDetail() {
                             <AudioPlayer
                                 src={session.audio_url}
                                 transcript={session.transcript}
+                                freezeEvents={session.freeze_events}
                                 onTimeUpdate={setCurrentTime}
                             />
                         </section>
