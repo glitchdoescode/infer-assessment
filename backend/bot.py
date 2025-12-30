@@ -42,6 +42,7 @@ logger.info("✅ Silero VAD model loaded")
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+from pipecat.processors.transcript_processor import TranscriptProcessor
 
 logger.info("Loading pipeline components...")
 from pipecat.pipeline.pipeline import Pipeline
@@ -123,6 +124,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         user_continuous_stream=False, # We want turns
     )
     
+    # Transcript processor
+    transcript = TranscriptProcessor()
+    
     # initialize session data
     session_data = {
         "id": session_id,
@@ -176,11 +180,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             transport.input(),  # Transport user input
             rtvi,  # RTVI processor
             stt,
+            transcript.user(), # Capture user transcript
             context_aggregator.user(),  # User responses
             llm,  # LLM
             tts,  # TTS
             transport.output(),  # Transport bot output
             audiobuffer, # Capture audio
+            transcript.assistant(), # Capture bot transcript
             context_aggregator.assistant(),  # Assistant spoken responses
         ]
     )
@@ -204,45 +210,47 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # We need to capture transcript items. 
     # A simple way is to observe the context.
     
-    @context_aggregator.user().event_handler("on_context_update")
-    async def on_user_context_update(processor, context):
-        # This triggers when user speaks
-        if context.messages:
-            last_msg = context.messages[-1]
-            if last_msg['role'] == 'user':
-                 session_data["transcript"].append({
-                     "role": "user",
-                     "content": last_msg['content'],
-                     "timestamp": datetime.utcnow().timestamp(), # Approximate
-                     "latency": 0.0 # User has no latency
-                 })
-                 save_session_to_db()
-
-    @context_aggregator.assistant().event_handler("on_context_update")
-    async def on_bot_context_update(processor, context):
-        # This triggers when bot speaks
-        if context.messages:
-             last_msg = context.messages[-1]
-             if last_msg['role'] == 'assistant':
-                 # Calculate latency: time since last user turn
-                 latency = 0.0
+    @transcript.event_handler("on_transcript_update")
+    async def on_transcript_update(processor, frame):
+        # We process transcript updates
+        
+        # frame is a TranscriptionUpdateFrame? Or similar?
+        # The docs say: emit events with transcript updates
+        # Check docs/transcript-processor.md again or inspect code if unsure
+        # But assuming it passes 'frame' which has 'messages'.
+        
+        # Actually docs say:
+        # for message in frame.messages:
+        #    print(f"[{message.timestamp}] {message.role}: {message.content}")
+        
+        for message in frame.messages:
+             role = message.role
+             content = message.content
+             timestamp = datetime.utcnow().timestamp() # message.timestamp might be relative or string
+             
+             latency = 0.0
+             
+             if role == 'assistant':
+                 # Calculate latency
                  if session_data["transcript"] and session_data["transcript"][-1]["role"] == "user":
                       last_user_time = session_data["transcript"][-1]["timestamp"]
-                      latency = datetime.utcnow().timestamp() - last_user_time
-                 
-                 session_data["transcript"].append({
-                     "role": "assistant",
-                     "content": last_msg['content'],
-                     "timestamp": datetime.utcnow().timestamp(),
-                     "latency": latency
-                 })
+                      latency = timestamp - last_user_time
                  
                  # Update average latency
                  latencies = [t["latency"] for t in session_data["transcript"] if t["role"] == "assistant"]
+                 # Add current latency to calc average
+                 latencies.append(latency)
                  if latencies:
                      session_data["latency_metrics"]["average_latency"] = sum(latencies) / len(latencies)
-                 
-                 save_session_to_db()
+
+             session_data["transcript"].append({
+                "role": role,
+                "content": content,
+                "timestamp": timestamp,
+                "latency": latency
+             })
+        
+        save_session_to_db()
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
