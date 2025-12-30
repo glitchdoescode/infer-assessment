@@ -48,7 +48,7 @@ from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
-from pipecat.frames.frames import AudioRawFrame, TTSStartedFrame, TTSStoppedFrame
+from pipecat.frames.frames import AudioRawFrame, TTSStartedFrame, TTSStoppedFrame, UserStoppedSpeakingFrame
 import random
 import asyncio
 
@@ -195,6 +195,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                 self._is_bot_speaking = True
             elif isinstance(frame, TTSStoppedFrame):
                 self._is_bot_speaking = False
+            
+            # Track User state for latency
+            if isinstance(frame, UserStoppedSpeakingFrame):
+                 session_data["last_user_end_time"] = datetime.utcnow().timestamp()
 
             if not self._enabled:
                 await self.push_frame(frame, direction)
@@ -207,7 +211,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                 # If currently frozen
                 if self._frozen:
                     if current_time < self._freeze_end_time:
-                         # Drop audio frame (effectively silence/freeze)
+                         # Send silence instead of dropping
+                         silence_audio = b'\x00' * len(frame.audio)
+                         silence_frame = AudioRawFrame(audio=silence_audio, sample_rate=frame.sample_rate, num_channels=frame.num_channels)
+                         await self.push_frame(silence_frame, direction)
                          return 
                     else:
                         # Unfreeze
@@ -227,7 +234,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                          "duration": duration
                      })
                      save_session_to_db()
-                     return # Drop this frame too
+                     
+                     # Drop this frame too (send silence)
+                     silence_audio = b'\x00' * len(frame.audio)
+                     silence_frame = AudioRawFrame(audio=silence_audio, sample_rate=frame.sample_rate, num_channels=frame.num_channels)
+                     await self.push_frame(silence_frame, direction)
+                     return 
             
             await self.push_frame(frame, direction)
             
@@ -304,7 +316,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
              
              if role == 'assistant':
                  # Calculate latency
-                 if session_data["transcript"] and session_data["transcript"][-1]["role"] == "user":
+                 if "last_user_end_time" in session_data:
+                      last_user_time = session_data["last_user_end_time"]
+                      latency = timestamp - last_user_time
+                 elif session_data["transcript"] and session_data["transcript"][-1]["role"] == "user":
+                      # Fallback
                       last_user_time = session_data["transcript"][-1]["timestamp"]
                       latency = timestamp - last_user_time
                  
