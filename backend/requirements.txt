@@ -6,3 +6,7 @@ pipecat-ai[daily, deepgram, google, elevenlabs, cartesia]
 python-dotenv
 aiohttp
 loguru
+pipecat-ai[local-smart-turn-v3]
+pipecat-ai-small-webrtc-prebuilt
+aiortc
+opencv-python

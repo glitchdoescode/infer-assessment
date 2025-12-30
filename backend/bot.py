@@ -47,7 +47,8 @@ from pipecat.frames.frames import LLMRunFrame
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import AudioRawFrame
+
+from pipecat.frames.frames import AudioRawFrame, TTSStartedFrame, TTSStoppedFrame
 import random
 import asyncio
 
@@ -180,6 +181,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             super().__init__()
             self._frozen = False
             self._freeze_end_time = 0
+            self._is_bot_speaking = False
             # Check env var to enable/disable
             self._enabled = os.getenv("ENABLE_FREEZE_SIMULATION", "false").lower() == "true"
             if self._enabled:
@@ -188,6 +190,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
             
+            # Track TTS state
+            if isinstance(frame, TTSStartedFrame):
+                self._is_bot_speaking = True
+            elif isinstance(frame, TTSStoppedFrame):
+                self._is_bot_speaking = False
+
             if not self._enabled:
                 await self.push_frame(frame, direction)
                 return
@@ -205,11 +213,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                         # Unfreeze
                         self._frozen = False
                         logger.info("Unfreezing bot")
-                        # Update the last event with actual end time? 
-                        # We simplified by setting duration upfront.
                 
-                # If not frozen, small chance to freeze
-                elif random.random() < 0.005: # 0.5% chance per frame (approx every few seconds given frame rate)
+                # If not frozen, small chance to freeze BUT ONLY IF SPEAKING
+                elif self._is_bot_speaking and random.random() < 0.01: # 1% chance per frame while speaking
                      duration = random.uniform(2.0, 5.0) # 2-5s freeze
                      self._frozen = True
                      self._freeze_end_time = current_time + duration
