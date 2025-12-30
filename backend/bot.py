@@ -182,11 +182,24 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             self._frozen = False
             self._freeze_end_time = 0
             self._is_bot_speaking = False
+            self._current_event_idx = -1
             # Check env var to enable/disable
             self._enabled = os.getenv("ENABLE_FREEZE_SIMULATION", "false").lower() == "true"
             if self._enabled:
                 logger.info("Freeze Simulation ENABLED")
-            
+        
+        def _end_freeze(self):
+            if self._frozen and self._current_event_idx >= 0:
+                # Update the actual end time and duration
+                actual_end_time = datetime.utcnow().timestamp()
+                event = session_data["freeze_events"][self._current_event_idx]
+                event["end_time"] = actual_end_time
+                event["duration"] = actual_end_time - event["start_time"]
+                
+                self._frozen = False
+                logger.info(f"Unfreezing bot. Actual duration: {event['duration']:.2f}s")
+                save_session_to_db()
+
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
             
@@ -195,6 +208,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                 self._is_bot_speaking = True
             elif isinstance(frame, TTSStoppedFrame):
                 self._is_bot_speaking = False
+                # If we were frozen, stop freezing now as speech ended
+                if self._frozen:
+                    self._end_freeze()
             
             # Track User state for latency
             if isinstance(frame, UserStoppedSpeakingFrame):
@@ -217,22 +233,24 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                          await self.push_frame(silence_frame, direction)
                          return 
                     else:
-                        # Unfreeze
-                        self._frozen = False
-                        logger.info("Unfreezing bot")
+                        # Timeout reached
+                        self._end_freeze()
                 
                 # If not frozen, small chance to freeze BUT ONLY IF SPEAKING
-                elif self._is_bot_speaking and random.random() < 0.01: # 1% chance per frame while speaking
-                     duration = random.uniform(2.0, 5.0) # 2-5s freeze
+                elif self._is_bot_speaking and random.random() < 0.05: # 5% chance per frame while speaking
+                     duration = random.uniform(1.0, 3.0) # 1-3s freeze (shorter for realism)
                      self._frozen = True
                      self._freeze_end_time = current_time + duration
-                     logger.info(f"Freezing bot for {duration:.2f}s")
+                     logger.info(f"Freezing bot for max {duration:.2f}s")
                      
-                     session_data["freeze_events"].append({
+                     # Create new event
+                     event = {
                          "start_time": current_time,
-                         "end_time": self._freeze_end_time,
-                         "duration": duration
-                     })
+                         "end_time": self._freeze_end_time, # Placeholder
+                         "duration": duration # Placeholder
+                     }
+                     session_data["freeze_events"].append(event)
+                     self._current_event_idx = len(session_data["freeze_events"]) - 1
                      save_session_to_db()
                      
                      # Drop this frame too (send silence)
