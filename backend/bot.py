@@ -1,197 +1,151 @@
-import asyncio
+#
+# Copyright (c) 2024–2025, Daily
+#
+# SPDX-License-Identifier: BSD 2-Clause License
+#
+
+"""Pipecat Quickstart Example.
+
+The example runs a simple voice AI bot that you can connect to using your
+browser and speak with it. You can also deploy this bot to Pipecat Cloud.
+
+Required AI services:
+- Deepgram (Speech-to-Text)
+- OpenAI (LLM)
+- Cartesia (Text-to-Speech)
+
+Run the bot using::
+
+    uv run bot.py
+"""
+
 import os
-import sys
-import aiohttp
-import time
-
-from pipecat.transports.daily.transport import DailyParams, DailyTransport
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask, PipelineParams
-from pipecat.processors.aggregators.llm_response import LLMUserContextAggregator, LLMAssistantContextAggregator
-from pipecat.processors.aggregators.llm_context import LLMContext
-
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.google.llm import GoogleLLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
-from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import TextFrame, LLMFullResponseEndFrame, Frame, TranscriptionFrame, AudioRawFrame
-import wave
-
-class WavAudioRecorder(FrameProcessor):
-    def __init__(self, filename: str):
-        super().__init__()
-        self.filename = filename
-        self._wav_file = None
-
-    async def start_recording(self):
-        self._wav_file = wave.open(self.filename, "wb")
-        self._wav_file.setnchannels(1)
-        self._wav_file.setsampwidth(2) # 16-bit
-        self._wav_file.setframerate(16000) 
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await self.push_frame(frame, direction)
-        if isinstance(frame, AudioRawFrame):
-            if not self._wav_file:
-                 await self.start_recording()
-            self._wav_file.writeframes(frame.audio)
-
-    async def cleanup(self):
-        if self._wav_file:
-            self._wav_file.close()
-            print(f"Saved recording to {self.filename}")
 
 from dotenv import load_dotenv
+from loguru import logger
 
-load_dotenv()
+print("🚀 Starting Pipecat bot...")
+print("⏳ Loading models and imports (20 seconds, first run only)\n")
 
-class APILogger:
-    def __init__(self, api_url):
-        self.api_url = api_url
-        self.session_id = None
-        self.start_time = time.time()
+logger.info("Loading Local Smart Turn Analyzer V3...")
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
-    async def create_session(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{self.api_url}/sessions/") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    self.session_id = data["id"]
-                    self.start_time = time.time()
-                    print(f"Session created: {self.session_id}")
+logger.info("✅ Local Smart Turn Analyzer V3 loaded")
+logger.info("Loading Silero VAD model...")
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 
-    async def log_transcript(self, role, content):
-        if not self.session_id: return
-        timestamp = time.time() - self.start_time
-        payload = [{"role": role, "content": content, "timestamp": timestamp, "latency": 0.0}]
-        async with aiohttp.ClientSession() as session:
-            await session.patch(f"{self.api_url}/sessions/{self.session_id}/transcript", json=payload)
+logger.info("✅ Silero VAD model loaded")
 
-    async def log_freeze(self, start, end):
-        if not self.session_id: return
-        payload = [{"start_time": start - self.start_time, "end_time": end - self.start_time, "duration": end - start}]
-        async with aiohttp.ClientSession() as session:
-            await session.patch(f"{self.api_url}/sessions/{self.session_id}/freeze_events", json=payload)
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import LLMRunFrame
 
-class TranscriptProcessor(FrameProcessor):
-    def __init__(self, logger: APILogger):
-        super().__init__()
-        self.logger = logger
+logger.info("Loading pipeline components...")
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
+from pipecat.runner.types import RunnerArguments
+from pipecat.runner.utils import create_transport
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.google.llm import GoogleLLMService
+from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.transports.daily.transport import DailyParams
 
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await self.push_frame(frame, direction)
-        if isinstance(frame, TranscriptionFrame):
-             await self.logger.log_transcript("user", frame.text)
-        elif isinstance(frame, TextFrame) and direction == FrameDirection.DOWNSTREAM:
-             await self.logger.log_transcript("assistant", frame.text)
+logger.info("✅ All components loaded successfully!")
 
-class FreezeProcessor(FrameProcessor):
-    def __init__(self, logger: APILogger):
-        super().__init__()
-        self.logger = logger
-        self._frozen = False
-        self._freeze_start = 0.0
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if self._frozen and isinstance(frame, (TextFrame, LLMFullResponseEndFrame)):
-            return
-        await self.push_frame(frame, direction)
-
-    async def set_frozen(self, frozen: bool):
-        if frozen and not self._frozen:
-            self._frozen = True
-            self._freeze_start = time.time()
-            print("Packet freeze simulated")
-        elif not frozen and self._frozen:
-            self._frozen = False
-            await self.logger.log_freeze(self._freeze_start, time.time())
-            print("Packet freeze ended")
+load_dotenv(override=True)
 
 
-
-async def simulate_freeze(processor):
-    while True:
-        await asyncio.sleep(20)
-        await processor.set_frozen(True)
-        await asyncio.sleep(5)
-        await processor.set_frozen(False)
-
-async def main():
-    transport = DailyTransport(
-        room_url=os.getenv("DAILY_SAMPLE_ROOM_URL"),
-        token=os.getenv("DAILY_SAMPLE_ROOM_TOKEN"),
-        bot_name="FreezeBot",
-            audio_out_enabled=True,
-            audio_in_enabled=True,
-            vad_analyzer=SileroVADAnalyzer()
-    )
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+    logger.info(f"Starting bot")
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
-    
-    llm = GoogleLLMService(
-        api_key=os.getenv("GOOGLE_API_KEY"),
-        model="models/gemini-2.5-flash" 
-    )
-
-    logger = APILogger("http://localhost:8000/api")
-    await logger.create_session()
-
-    freeze_processor = FreezeProcessor(logger)
-    transcript_processor = TranscriptProcessor(logger)
-
-    # Recording Setup
-    if not os.path.exists("backend/recordings"):
-        os.makedirs("backend/recordings", exist_ok=True)
-    rec_filename = f"backend/recordings/{logger.session_id}.wav"
-    recorder = WavAudioRecorder(rec_filename)
-    print(f"Recording to: {rec_filename}")
 
     tts = CartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
-        voice_id="248be419-3632-4f38-9bed-683592322bd8", 
+        voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
     )
+
+    llm = GoogleLLMService(api_key=os.getenv("GOOGLE_API_KEY"))
 
     messages = [
         {
-            "role": "system", 
-            "content": "You are a helpful and concise voice assistant. You are testing a system that might freeze."
-        }
+            "role": "system",
+            "content": "You are a friendly AI assistant. Respond naturally and keep your answers conversational.",
+        },
     ]
+
     context = LLMContext(messages)
-    user_aggregator = LLMUserContextAggregator(context)
-    assistant_aggregator = LLMAssistantContextAggregator(context)
+    context_aggregator = LLMContextAggregatorPair(context)
 
-    pipeline = Pipeline([
-        transport.input(),
-        recorder, # Capture raw audio input
-        stt,
-        transcript_processor,
-        user_aggregator,
-        llm,
-        freeze_processor,
-        tts,
-        transport.output(),
-        assistant_aggregator
-    ])
+    rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
-    runner = PipelineRunner()
+    pipeline = Pipeline(
+        [
+            transport.input(),  # Transport user input
+            rtvi,  # RTVI processor
+            stt,
+            context_aggregator.user(),  # User responses
+            llm,  # LLM
+            tts,  # TTS
+            transport.output(),  # Transport bot output
+            context_aggregator.assistant(),  # Assistant spoken responses
+        ]
+    )
 
-    asyncio.create_task(simulate_freeze(freeze_processor))
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            enable_metrics=True,
+            enable_usage_metrics=True,
+        ),
+        observers=[RTVIObserver(rtvi)],
+    )
 
-    print("Bot is connecting to Daily room...")
-    
-    try:
-        await runner.run(task)
-    finally:
-        await recorder.cleanup()
-    
-    print("Bot disconnected.")
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        logger.info(f"Client connected")
+        # Kick off the conversation.
+        messages.append({"role": "system", "content": "Say hello and briefly introduce yourself."})
+        await task.queue_frames([LLMRunFrame()])
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        logger.info(f"Client disconnected")
+        await task.cancel()
+
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+
+    await runner.run(task)
+
+
+async def bot(runner_args: RunnerArguments):
+    """Main bot entry point for the bot starter."""
+
+    transport_params = {
+        "daily": lambda: DailyParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+            turn_analyzer=LocalSmartTurnAnalyzerV3(),
+        ),
+        "webrtc": lambda: TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+            turn_analyzer=LocalSmartTurnAnalyzerV3(),
+        ),
+    }
+
+    transport = await create_transport(runner_args, transport_params)
+
+    await run_bot(transport, runner_args)
+
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    from pipecat.runner.run import main
+
+    main()
