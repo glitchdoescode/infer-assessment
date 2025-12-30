@@ -152,10 +152,10 @@ export function AudioPlayer({ src, transcript, freezeEvents, onTimeUpdate }: Aud
                             key={`freeze-${i}`}
                             className="absolute top-0 h-full bg-red-400 opacity-60 z-10 group cursor-help"
                             style={{ left: `${startPos}%`, width: `${width}%` }}
-                            title={`Freeze: ${event.duration.toFixed(2)}s`}
+                            title={`Freeze: ${relativeStart.toFixed(1)}s - ${(relativeStart + event.duration).toFixed(1)}s (${event.duration.toFixed(2)}s)`}
                         >
-                            <div className="hidden group-hover:block absolute bottom-full mb-1 bg-red-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-30">
-                                Freeze: {event.duration.toFixed(2)}s
+                            <div className="hidden group-hover:block absolute bottom-full mb-1 bg-red-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-30 left-1/2 -translate-x-1/2">
+                                Freeze: {relativeStart.toFixed(1)}s - {(relativeStart + event.duration).toFixed(1)}s ({event.duration.toFixed(2)}s)
                             </div>
                         </div>
                     );
