@@ -25,3 +25,7 @@ def update_session(db: Session, session_id: UUID, updates: dict) -> SessionModel
     db.commit()
     db.refresh(session)
     return session
+
+def get_all_sessions(db: Session) -> list[SessionModel]:
+    statement = select(SessionModel).order_by(SessionModel.created_at.desc())
+    return db.exec(statement).all()

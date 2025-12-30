@@ -13,6 +13,11 @@ router = APIRouter()
 def create_new_session(session: SessionModel, db: Session = Depends(get_db_session)):
     return create_session(db, session)
 
+@router.get("/sessions/", response_model=List[SessionModel])
+def list_sessions(db: Session = Depends(get_db_session)):
+    from app.crud import get_all_sessions
+    return get_all_sessions(db)
+
 @router.get("/sessions/{session_id}", response_model=SessionModel)
 def read_session(session_id: UUID, db: Session = Depends(get_db_session)):
     session = get_session_by_id(db, session_id)

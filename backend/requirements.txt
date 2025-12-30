@@ -2,3 +2,6 @@ pydantic
 sqlmodel
 fastapi
 uvicorn
+pipecat-ai[daily, deepgram, google, elevenlabs, cartesia]
+python-dotenv
+aiohttp
