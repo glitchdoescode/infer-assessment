@@ -11,7 +11,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# lib/
 lib64/
 parts/
 sdist/
@@ -41,3 +41,6 @@ dist/
 # Database
 *.sqlite
 *.db
+
+backend/recordings
+docs
