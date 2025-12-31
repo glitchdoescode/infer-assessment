@@ -6,15 +6,15 @@ import { User, Bot } from "lucide-react";
 
 interface TranscriptViewerProps {
     transcript: TranscriptTurn[];
+    sessionStartTime: number;
     currentTime: number;
 }
 
-export function TranscriptViewer({ transcript, currentTime }: TranscriptViewerProps) {
+export function TranscriptViewer({ transcript, sessionStartTime, currentTime }: TranscriptViewerProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    // We need to map audio time back to transcript items. 
-    // Assuming relative timing strategy again: relativeTime = turn.timestamp - startTime
-    const startTime = transcript.length > 0 ? transcript[0].timestamp : 0;
+    // Map audio time back to transcript items using explicit session start time
+    const startTime = sessionStartTime;
 
     // Find active turn
     const activeIndex = transcript.findIndex((turn, i) => {

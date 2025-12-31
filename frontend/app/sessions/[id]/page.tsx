@@ -90,6 +90,7 @@ export default function SessionDetail() {
                             <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcript</h2>
                             <TranscriptViewer
                                 transcript={session.transcript}
+                                sessionStartTime={new Date(session.created_at).getTime() / 1000}
                                 currentTime={currentTime}
                             />
                         </section>
