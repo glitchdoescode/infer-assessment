@@ -8,9 +8,10 @@ interface AudioPlayerProps {
     src?: string;
     transcript: TranscriptTurn[];
     freezeEvents?: FreezeEvent[];
+    sessionStartTime: number;
     onTimeUpdate?: (currentTime: number) => void;
 }
-export function AudioPlayer({ src, transcript, freezeEvents, onTimeUpdate }: AudioPlayerProps) {
+export function AudioPlayer({ src, transcript, freezeEvents, sessionStartTime, onTimeUpdate }: AudioPlayerProps) {
     const audioRef = useRef<HTMLAudioElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
@@ -21,24 +22,10 @@ export function AudioPlayer({ src, transcript, freezeEvents, onTimeUpdate }: Aud
         (turn) => turn.role === "assistant" && turn.latency > 0
     );
 
-    // Find the first timestamp to normalize visual timeline if needed
-    // But usually audio starts at 0. 
-    // Timestamps in transcript are absolute UTC. 
-    // We need to map them to relative audio time.
-    // Assumption: The first turn corresponds to start of audio? 
-    // No, actually recordings might be one continuous file or chunks.
-    // The 'timestamp' in transcript is wall clock.
-    // We need to know the start time of the recording to map wall clock to audio time.
-    // The session 'created_at' is likely the start time.
-    // BUT: bot.py starts recording on client_connected.
-    // Session created_at is set when session_data is init.
-    // Timestamps are set when messages arrive.
-    // We can approximate: start_time = first turn timestamp if user spoke first?
-    // Let's assume start_time is roughly the first timestamp.
-    const startTime = transcript.length > 0 ? transcript[0].timestamp : 0;
+    // Use the explicit session start time provided by backend
+    // This ensures alignment even if the first turn happens seconds later
+    const startTime = sessionStartTime;
 
-    // Actually, we need to be careful. The audio file starts from 0s. 
-    // The transcript timestamps are absolute numbers.
     // Relative offset = turn.timestamp - startTime.
 
     const togglePlay = () => {

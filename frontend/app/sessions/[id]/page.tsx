@@ -81,6 +81,7 @@ export default function SessionDetail() {
                                 src={session.audio_url}
                                 transcript={session.transcript}
                                 freezeEvents={session.freeze_events}
+                                sessionStartTime={new Date(session.created_at).getTime() / 1000}
                                 onTimeUpdate={setCurrentTime}
                             />
                         </section>
