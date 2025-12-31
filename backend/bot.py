@@ -206,6 +206,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             # Track TTS state
             if isinstance(frame, TTSStartedFrame):
                 self._is_bot_speaking = True
+                # Calculate latency at the START of speech
+                if "last_user_end_time" in session_data:
+                     # Calculate latency (Voice Latency)
+                     start_time = datetime.utcnow().timestamp()
+                     latency = start_time - session_data["last_user_end_time"]
+                     session_data["current_turn_latency"] = latency
+                     logger.info(f"Bot started speaking. Latency: {latency:.2f}s")
             elif isinstance(frame, TTSStoppedFrame):
                 self._is_bot_speaking = False
                 # If we were frozen, stop freezing now as speech ended
@@ -333,8 +340,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
              latency = 0.0
              
              if role == 'assistant':
-                 # Calculate latency
-                 if "last_user_end_time" in session_data:
+                 # Use the latency calculated at the START of the turn
+                 if "current_turn_latency" in session_data:
+                      latency = session_data["current_turn_latency"]
+                 elif "last_user_end_time" in session_data:
+                      # Fallback if TTSStartedFrame wasn't caught for some reason
                       last_user_time = session_data["last_user_end_time"]
                       latency = timestamp - last_user_time
                  elif session_data["transcript"] and session_data["transcript"][-1]["role"] == "user":
@@ -347,7 +357,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
                  # Add current latency to calc average
                  latencies.append(latency)
                  if latencies:
-                     session_data["latency_metrics"]["average_latency"] = sum(latencies) / len(latencies)
+                      session_data["latency_metrics"]["average_latency"] = sum(latencies) / len(latencies)
 
              session_data["transcript"].append({
                 "role": role,
